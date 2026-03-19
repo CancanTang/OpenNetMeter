@@ -1,5 +1,10 @@
-﻿using System.Data.SQLite;
+﻿using System;
+using System.Collections.Generic;
+using System.Data.SQLite;
 using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace DatabaseEngine
 {
@@ -10,7 +15,7 @@ namespace DatabaseEngine
         {
             var filePath = Path.Combine(path, dbFileName + ".sqlite");
             ConnectionString = @"Data Source=" + Path.Combine(path, dbFileName + ".sqlite;" + " foreign keys=true");
-            if (!File.Exists(filePath))
+            if (!System.IO.File.Exists(filePath))
             {
                 SQLiteConnection.CreateFile(filePath);
             }

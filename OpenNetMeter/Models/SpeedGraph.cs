@@ -1,5 +1,4 @@
-﻿using OpenNetMeter.Properties;
-using OpenNetMeter.Utilities;
+﻿using OpenNetMeter.Utilities;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -86,9 +85,7 @@ namespace OpenNetMeter.Models
         public void Init()
         {
             XaxisResolution = (GridYCount - 1) * 10;
-            bool useBytes = SettingsManager.Current.NetworkSpeedFormat != 0;
-            string sampleLabel = DataSizeSuffix.InStr(512 * 1024 * 1024, 1, useBytes, SpeedMagnitude.Auto);
-            maxYtextSize =  UIMeasure.Shape(new TextBlock { Text = sampleLabel, FontSize = 11, Padding = new Thickness(0) });
+            maxYtextSize =  UIMeasure.Shape(new TextBlock { Text = "0512Mb", FontSize = 11, Padding = new Thickness(0) });
             maxYtextSize.Width += 2.0;
             Xstart = maxYtextSize.Width;
 
@@ -139,12 +136,24 @@ namespace OpenNetMeter.Models
                     else
                         temp *= 512;
 
-                    Ylabels.Add(new TextBlock
+                    if (Properties.Settings.Default.NetworkSpeedFormat == 0)
                     {
-                        Text = DataSizeSuffix.InStr(temp, 1, useBytes, SpeedMagnitude.Auto),
-                        FontSize = 11,
-                        Padding = new Thickness(0, 0, 0, 0)
-                    });
+                        Ylabels.Add(new TextBlock
+                        {
+                            Text = DataSizeSuffix.InStr(temp, 1, false),
+                            FontSize = 11,
+                            Padding = new Thickness(0, 0, 0, 0)
+                        });
+                    }
+                    else
+                    {
+                        Ylabels.Add(new TextBlock
+                        {
+                            Text = DataSizeSuffix.InStr(temp, 1, true),
+                            FontSize = 11,
+                            Padding = new Thickness(0, 0, 0, 0)
+                        });
+                    }
 
                     XLines.Add(new MyLine());
                 }
@@ -309,8 +318,10 @@ namespace OpenNetMeter.Models
                         else
                             temp *= 512;
 
-                        bool useBytes = SettingsManager.Current.NetworkSpeedFormat != 0;
-                        Ylabels[i].Text = DataSizeSuffix.InStr(temp, 1, useBytes, SpeedMagnitude.Auto);
+                        if (Properties.Settings.Default.NetworkSpeedFormat == 0)
+                            Ylabels[i].Text = DataSizeSuffix.InStr(temp, 1, false);
+                        else
+                            Ylabels[i].Text = DataSizeSuffix.InStr(temp, 1, true);
                     }
                 }
             });

@@ -4,7 +4,6 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using OpenNetMeter.Models;
-using OpenNetMeter.Properties;
 using OpenNetMeter.ViewModels;
 
 namespace OpenNetMeter.Views
@@ -36,7 +35,7 @@ namespace OpenNetMeter.Views
 
         private void MiniWidgetV_Loaded(object sender, RoutedEventArgs e)
         {
-            if (!SettingsManager.Current.MiniWidgetVisibility)
+            if (!Properties.Settings.Default.MiniWidgetVisibility)
             {
                 this.Visibility = Visibility.Hidden;
                 fixZorderTimer.IsEnabled = false;
@@ -78,20 +77,12 @@ namespace OpenNetMeter.Views
 
         private void Window_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            if (DataContext is MiniWidgetVM vm && vm.IsPinned)
-            {
-                return;
-            }
-
             this.DragMove();
         }
 
         private void MenuItem_Hide_Click(object sender, RoutedEventArgs e)
         {
-            if (mainWindow is MainWindow mw) // hide from miniwidget
-                mw.HideMiniWidget();
-            else // hide from settings page
-                HideMiniWidget();
+            HideMiniWidget();
         }
         private void MenuItem_Open_Click(object sender, RoutedEventArgs e)
         {
@@ -116,8 +107,8 @@ namespace OpenNetMeter.Views
 
         public void SaveWinPos(int x, int y)
         {
-            SettingsManager.Current.MiniWidgetPos = new System.Drawing.Point(x, y);
-            SettingsManager.Save();
+            Properties.Settings.Default.MiniWidgetPos = new System.Drawing.Point(x, y);
+            Properties.Settings.Default.Save();
         }
 
         private void Window_LocationChanged(object sender, System.EventArgs e)
@@ -133,8 +124,8 @@ namespace OpenNetMeter.Views
             this.Activate();
             fixZorderTimer.IsEnabled = true;
 
-            SettingsManager.Current.MiniWidgetVisibility = true;
-            SettingsManager.Save();
+            Properties.Settings.Default.MiniWidgetVisibility = true;
+            Properties.Settings.Default.Save();
         }
 
         public void HideMiniWidget()
@@ -142,8 +133,8 @@ namespace OpenNetMeter.Views
             this.Visibility = Visibility.Hidden;
             fixZorderTimer.IsEnabled = false;
 
-            SettingsManager.Current.MiniWidgetVisibility = false;
-            SettingsManager.Save();
+            Properties.Settings.Default.MiniWidgetVisibility = false;
+            Properties.Settings.Default.Save();
         }
     }
 }

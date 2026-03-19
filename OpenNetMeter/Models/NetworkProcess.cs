@@ -9,816 +9,661 @@ using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
 using System.Threading;
+using ManagedNativeWifi;
 using System.Net.Sockets;
 using System.Collections.Generic;
 using OpenNetMeter.Utilities;
-using OpenNetMeter.Properties;
-using System.Diagnostics.Eventing.Reader;
-using System.Text.RegularExpressions;
 
 namespace OpenNetMeter.Models
 {
-    public partial class NetworkProcess : IDisposable
+    public class NetworkProcess : IDisposable
     {
-        //---------- Constants ------------//
+        //---------- private variables ------------//
 
         private const int OneSec = 1000;
-        private const int DebounceDelayMs = 300; // Delay before processing network change events
 
-        // Default IP values indicating "not connected"
-        private static readonly byte[] DefaultIPv4 = { 0, 0, 0, 0 };
-        private static readonly byte[] DefaultIPv6 = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        private readonly byte[] defaultIPv4;
+        private readonly byte[] defaultIPv6;
+        private byte[] localIPv4;
+        private byte[] localIPv6;
 
-        //---------- Network State ------------//
+        //variables to create seperate running threads for updating the network speed and db push
+        private AsyncTask asyncTask_networkSpeed;
+        private AsyncTask asyncTask_dbPush;
 
-        /// <summary>
-        /// Immutable snapshot of current network connection state.
-        /// Used to detect connection changes without race conditions.
-        /// </summary>
-        private sealed record NetworkSnapshot(
-            string AdapterName,  // Display name, includes SSID for Wi-Fi
-            string AdapterId,    // GUID for the adapter
-            byte[] IPv4,         // Assigned IPv4 address bytes
-            byte[] IPv6          // Assigned IPv6 address bytes
-        );
-
-        // Lock for thread-safe access to local IP addresses
-        private readonly object stateLock = new object();
-
-        // Currently assigned local IP addresses (used for packet filtering)
-        private byte[] localIPv4 = DefaultIPv4;
-        private byte[] localIPv6 = DefaultIPv6;
-
-        //---------- Debounce & Synchronization ------------//
-
-        // Timer-based debounce: each network change event resets the timer.
-        // When it finally fires (after DebounceDelayMs of silence), HandleNetworkChange runs.
-        private Timer? debounceTimer;
-        private volatile bool isDisposed;
-
-        // Lock to ensure only one HandleNetworkChange runs at a time
-        private readonly object networkChangeLock = new object();
-
-        //---------- Periodic Tasks ------------//
-
-        // Periodic task for updating network speed display
-        private PeriodicWork? networkSpeedWork;
-
-        // Periodic task for pushing process data to database
-        private PeriodicWork? dbPushWork;
-
-        //---------- ETW Session ------------//
-
-        // ETW kernel session for capturing network packets
-        private TraceEventSession? kernelSession;
-
-        private const string KernelSessionName = "OpenNetMeter-Kernel";
-
-        // Task running the ETW packet capture loop
+        //this is used to run the event tracing (kernelSession) in a seperate thread
         public Task? PacketTask;
 
-        //---------- Public State ------------//
+        private TraceEventSession? kernelSession;
 
-        // Current network adapter name (includes SSID for Wi-Fi connections)
-        public string AdapterName { get; private set; } = "";
+        public string AdapterName { get; private set; }
 
-        // Current adapter's unique ID (GUID) - used for comparison to detect changes
-        private string currentAdapterId = "";
+        //memory to store the process network details temporarily before updating the views.
+        public Dictionary<string, MyProcess_Small?>? MyProcesses { get; private set; }
+        public Dictionary<string, MyProcess_Small?>? MyProcessesBuffer { get; private set; }
 
-        /// <summary>
-        /// Primary buffer for storing process network data.
-        /// Alternates with MyProcessesBuffer to allow lock-free reading.
-        /// </summary>
-        public Dictionary<string, MyProcess_Small?> MyProcesses { get; } = new();
+        //memory to store the process network details temporarily before pushing to the database
+        public Dictionary<string, MyProcess_Small?>? PushToDBBuffer { get; private set; }
 
         /// <summary>
-        /// Secondary buffer for storing process network data.
-        /// While GUI reads from MyProcesses, new data goes here (and vice versa).
-        /// This double-buffering prevents lock contention with the UI thread.
-        /// </summary>
-        public Dictionary<string, MyProcess_Small?> MyProcessesBuffer { get; } = new();
-
-        /// <summary>
-        /// Buffer for data pending database write.
-        /// Cleared after each successful DB push.
-        /// </summary>
-        public Dictionary<string, MyProcess_Small?> PushToDBBuffer { get; } = new();
-
-        /// <summary>
-        /// Controls which buffer receives incoming packet data.
-        /// true = write to MyProcessesBuffer, read from MyProcesses
-        /// false = write to MyProcesses, read from MyProcessesBuffer
-        /// Toggled by the UI layer when extracting data for display.
+        /// why use this 'IsBufferTime'? 
+        /// during its true state, the Recv() in NetworkProcess stores the incoming data to the netProc.MyProcessesBuffer dictionary.
+        /// while its storing there, netProc.MyProcesses data is extracted to parse. Once done, this boolean is set to false
+        /// during the false state, the Recv() function stores data in the netProc.MyProcesses dictionary
+        /// during this, netProc.MyProcessesBuffer data is extracted to parse. 
         /// </summary>
         public bool IsBufferTime { get; set; }
 
-        // Running totals for current session (reset on adapter change)
         public long CurrentSessionDownloadData;
+
         public long CurrentSessionUploadData;
+
         public long UploadSpeed;
 
-        //---------- Properties with Change Notification ------------//
-
-        private long downloadSpeed;
+        //---------- variables with property changers ------------//
+        public long downloadSpeed;
         public long DownloadSpeed
         {
-            get => downloadSpeed;
-            set { downloadSpeed = value; OnPropertyChanged(nameof(DownloadSpeed)); }
+            get { return downloadSpeed; }
+            set { downloadSpeed = value; OnPropertyChanged("DownloadSpeed"); }
         }
 
-        private string isNetworkOnline = "Disconnected";
-        /// <summary>
-        /// Current connection status. Either "Disconnected" or the adapter name.
-        /// </summary>
+        private string isNetworkOnline = "error";
         public string IsNetworkOnline
         {
-            get => isNetworkOnline;
-            private set { isNetworkOnline = value; OnPropertyChanged(nameof(IsNetworkOnline)); }
+            get { return isNetworkOnline; }
+            set { isNetworkOnline = value; OnPropertyChanged("IsNetworkOnline"); }
         }
 
-        //---------- Initialization ------------//
+        public NetworkProcess()
+        {
+            //initialize variables
+            defaultIPv4 = new byte[]
+            {
+                0, 0, 0, 0
+            };
+            defaultIPv6 = new byte[]
+            {
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 0, 0
+            };
+            localIPv4 = defaultIPv4;
+            localIPv6 = defaultIPv6;
+            AdapterName = "";
+            MyProcesses = new Dictionary<string, MyProcess_Small?>();
+            MyProcessesBuffer = new Dictionary<string, MyProcess_Small?>();
+            PushToDBBuffer = new Dictionary<string, MyProcess_Small?>();
+            IsBufferTime = false;
+
+            kernelSession = null;
+            PacketTask = null;
+
+            asyncTask_networkSpeed = new AsyncTask(1);
+            asyncTask_dbPush = new AsyncTask(60);
+
+            CurrentSessionUploadData = 0;
+            CurrentSessionDownloadData = 0;
+            UploadSpeed = 0;
+            DownloadSpeed = 0;
+        }
 
         /// <summary>
-        /// Call after subscribing to property handlers in MainWindowVM.
-        /// Sets up network change monitoring and performs initial connection check.
+        /// call after subscribing to the property handlers in the MainWindowVM
         /// </summary>
         public void Initialize()
         {
             IsNetworkOnline = "Disconnected";
 
-            // Create the debounce timer (initially not running)
-            debounceTimer = new Timer(_ => HandleNetworkChange(), null, Timeout.Infinite, Timeout.Infinite);
+            //subscribe address network address change
+            NetworkChange.NetworkAddressChanged += NetworkChange_NetworkAddressChanged;
 
-            // Subscribe to network address changes (fires on connect/disconnect/IP change)
-            NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
-
-            // Check current connection state on startup
-            HandleNetworkChange();
+            //check for online network addresses
+            NetworkChange_NetworkAddressChanged(null, null);
         }
 
-        //---------- Network Detection (Snapshot-Based) ------------//
-
         /// <summary>
-        /// Queries the system for the current active network connection.
-        /// Returns an immutable snapshot of the connection, or null if disconnected.
-        /// 
-        /// This replaces the old socket-based GetLocalIP() approach which was unreliable
-        /// during network transitions (socket connect to 8.8.8.8 would fail transiently).
+        /// returns local IP (IPv4, IPv6)
         /// </summary>
-        private NetworkSnapshot? GetCurrentNetworkSnapshot()
+        /// <returns></returns>
+        private (byte[], byte[]) GetLocalIP()
         {
-            var adapters = NetworkInterface.GetAllNetworkInterfaces();
+            byte[] tempv4 = defaultIPv4;
+            byte[] tempv6 = defaultIPv6;
 
-            foreach (var adapter in adapters)
+            // IPv6
+            using (Socket socket = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, 0))
             {
-                // Skip adapters that aren't connected
-                if (adapter.OperationalStatus != OperationalStatus.Up)
-                    continue;
-
-                // Skip loopback (127.0.0.1)
-                if (adapter.NetworkInterfaceType == NetworkInterfaceType.Loopback)
-                    continue;
-
-                var props = adapter.GetIPProperties();
-
-                // No gateway = not a real internet connection (e.g., virtual adapters)
-                if (props.GatewayAddresses.Count == 0)
-                    continue;
-
-                byte[]? ipv4 = null;
-                byte[]? ipv6 = null;
-
-                // Extract assigned IP addresses
-                foreach (var unicast in props.UnicastAddresses)
+                try
                 {
-                    var addr = unicast.Address;
+                    socket.Connect("2001:4860:4860::8888", 65530);
+                    IPEndPoint? endPoint = socket.LocalEndPoint as IPEndPoint;
+                    if(endPoint != null)
+                        tempv6 = endPoint.Address.GetAddressBytes();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine(ex.Message);
+                }
+            }
 
-                    if (addr.AddressFamily == AddressFamily.InterNetwork)
+            // IPv4
+            using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
+            {
+                try
+                {
+                    socket.Connect("8.8.8.8", 65530);
+                    IPEndPoint? endPoint = socket.LocalEndPoint as IPEndPoint;
+                    if(endPoint != null)
+                        tempv4 = endPoint.Address.GetAddressBytes();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine(ex.Message);
+                }
+            }
+
+            return (tempv4, tempv6);
+        }
+
+        private void NetworkChange_NetworkAddressChanged(object? sender, EventArgs? e)
+        {
+            (byte[], byte[]) tempIP = (defaultIPv4, defaultIPv6);
+            bool networkAvailable = false;
+            NetworkInterface[] adapters = NetworkInterface.GetAllNetworkInterfaces();
+            foreach (NetworkInterface n in adapters)
+            {
+                if (n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                {
+                    if (n.OperationalStatus == OperationalStatus.Up) //if there is a connection
                     {
-                        ipv4 = addr.GetAddressBytes();
+                        tempIP = GetLocalIP(); //get assigned ip
+
+                        IPInterfaceProperties adapterProperties = n.GetIPProperties();
+                        if (adapterProperties.GatewayAddresses.FirstOrDefault() != null)
+                        {
+                            foreach (UnicastIPAddressInformation ip in adapterProperties.UnicastAddresses)
+                            {
+                                if (ByteArray.Compare(ip.Address.GetAddressBytes(), tempIP.Item1))
+                                {
+                                    if (localIPv4 == tempIP.Item1) //this is to prevent this event from firing multiple times during 1 connection change
+                                        break;
+                                    else
+                                        localIPv4 = tempIP.Item1;
+
+                                    networkAvailable = true;
+                                    AdapterName = n.Name;
+                                    if (n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+                                        AdapterName += "(" + NativeWifi.EnumerateConnectedNetworkSsids()?.FirstOrDefault()?.ToString() + ")";
+
+                                    Debug.WriteLine(n.Name + " is up " + ", IP: " + ip.Address.ToString());
+                                }
+                                else if(ByteArray.Compare(ip.Address.GetAddressBytes(), tempIP.Item2))
+                                {
+                                    if (localIPv6 == tempIP.Item2) //this is to prevent this event from firing multiple times during 1 connection change
+                                        break;
+                                    else
+                                        localIPv6 = tempIP.Item2;
+
+                                    networkAvailable = true;
+                                    AdapterName = n.Name;
+                                    if (n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+                                        AdapterName += "(" + NativeWifi.EnumerateConnectedNetworkSsids()?.FirstOrDefault()?.ToString() + ")";
+
+                                    Debug.WriteLine(n.Name + " is up " + ", IP: " + ip.Address.ToString());
+                                }
+                            }
+                        }
                     }
-                    else if (addr.AddressFamily == AddressFamily.InterNetworkV6
-                             && !addr.IsIPv6LinkLocal) // Skip link-local (fe80::) addresses
-                    {
-                        ipv6 = addr.GetAddressBytes();
-                    }
-                }
-
-                // Need at least one usable IP to consider this a valid connection
-                if (ipv4 == null && ipv6 == null)
-                    continue;
-
-                // Build display name (include SSID for Wi-Fi)
-                var name = adapter.Name;
-                if (adapter.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
-                {
-                    var ssid = GetConnectedSsid(adapter.Id);
-                    if (!string.IsNullOrEmpty(ssid))
-                        name += $"({ssid})";
-                }
-
-                Debug.WriteLine($"{adapter.Name} is up, IP: {(ipv4 != null ? new IPAddress(ipv4) : new IPAddress(ipv6!))}");
-
-                return new NetworkSnapshot(
-                    name,
-                    adapter.Id,
-                    ipv4 ?? DefaultIPv4,
-                    ipv6 ?? DefaultIPv6
-                );
-            }
-
-            return null; // No valid connection found
-        }
-
-        /// <summary>
-        /// Gets the SSID of the currently connected Wi-Fi network by reading
-        /// from the Windows WLAN AutoConfig event log.
-        /// 
-        /// This is more reliable than the WinRT API on Windows 11 which requires
-        /// location permissions to retrieve SSID.
-        /// </summary>
-        private static string? GetConnectedSsid(string adapterGuid)
-        {
-            try
-            {
-                // Query for EventID 8001 (successful connection) in WLAN-AutoConfig log
-                var query = new EventLogQuery(
-                    "Microsoft-Windows-WLAN-AutoConfig/Operational",
-                    PathType.LogName,
-                    "*[System[EventID=8001]]"
-                )
-                {
-                    ReverseDirection = true // Get most recent first
-                };
-
-                using var reader = new EventLogReader(query);
-                if (reader.ReadEvent() is EventRecord evt)
-                {
-                    var message = evt.FormatDescription();
-                    var match = Regex.Match(message, @"^SSID:\s*(.+)$", RegexOptions.Multiline);
-                    if (match.Success)
-                        return match.Groups[1].Value.Trim();
                 }
             }
-            catch
+
+            if (networkAvailable)
             {
-                // Silently fail - SSID is nice-to-have, not critical
-            }
-
-            return null;
-        }
-
-        //---------- Network Change Handling ------------//
-
-        /// <summary>
-        /// Event handler for NetworkChange.NetworkAddressChanged.
-        /// Resets the debounce timer so that HandleNetworkChange only runs
-        /// after DebounceDelayMs of silence (no rapid-fire events).
-        /// </summary>
-        private void OnNetworkAddressChanged(object? sender, EventArgs? e)
-        {
-            if (isDisposed)
-                return;
-
-            // Reset the timer countdown. If another event arrives before it fires,
-            // the timer resets again. No allocations, no CTS, no race conditions.
-            try
-            {
-                debounceTimer?.Change(DebounceDelayMs, Timeout.Infinite);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Timer was disposed between the isDisposed check and the Change call — harmless.
-            }
-        }
-
-        /// <summary>
-        /// Core network state machine. Compares current network state to tracked state
-        /// and triggers appropriate actions (connect/disconnect/switch/refresh).
-        /// 
-        /// State transitions:
-        /// - Disconnected -> Connected: Start monitoring
-        /// - Connected -> Disconnected: Stop monitoring  
-        /// - Connected -> Different adapter: Stop then start monitoring
-        /// - Connected -> Same adapter:
-        ///   - IP/name changed: Refresh tracked snapshot (no restart)
-        ///   - No meaningful change: Ignore transient event
-        /// 
-        /// Protected by networkChangeLock to prevent concurrent execution.
-        /// </summary>
-        private void HandleNetworkChange()
-        {
-            if (isDisposed)
-                return;
-
-            lock (networkChangeLock)
-            {
-                if (isDisposed)
-                    return;
-
-                var snapshot = GetCurrentNetworkSnapshot();
-
-                if (snapshot == null)
-                {
-                    // No valid connection found
-                    if (IsNetworkOnline != "Disconnected")
-                    {
-                        Debug.WriteLine("Ash: Connection lost");
-                        EndNetworkProcess();
-                    }
-                    return;
-                }
-
-                // Valid connection found - determine if it's new or changed
                 if (IsNetworkOnline == "Disconnected")
-                {
-                    // Was disconnected, now connected
-                    Debug.WriteLine("Ash: Connection established");
-                    ApplySnapshot(snapshot);
                     StartNetworkProcess();
-                }
-                else if (currentAdapterId != snapshot.AdapterId)
+                else if(IsNetworkOnline != AdapterName)
                 {
-                    // Was connected to different adapter (e.g., switched Wi-Fi networks)
-                    // Compare by ID, not name, because SSID retrieval can race with event log
-                    Debug.WriteLine("Ash: Network adapter changed");
                     EndNetworkProcess();
-                    ApplySnapshot(snapshot);
                     StartNetworkProcess();
                 }
-                else
-                {
-                    // Same adapter can still receive DHCP/IPv6 address changes or an SSID/name update.
-                    // Refresh tracked snapshot so packet filtering keeps matching local traffic.
-                    bool ipChanged = HasSnapshotAddressChanged(snapshot);
-                    bool nameChanged = !string.Equals(AdapterName, snapshot.AdapterName, StringComparison.Ordinal);
-                    if (ipChanged || nameChanged)
-                    {
-                        Debug.WriteLine("Ash: Adapter IP/name changed on same adapter - refreshing snapshot");
-                        ApplySnapshot(snapshot);
-
-                        // Keep status text in sync when SSID/name changes without adapter GUID change.
-                        if (nameChanged)
-                            IsNetworkOnline = AdapterName;
-                    }
-                }
             }
-        }
-
-        private bool HasSnapshotAddressChanged(NetworkSnapshot snapshot)
-        {
-            lock (stateLock)
+            else
             {
-                return !ByteArray.Compare(localIPv4, snapshot.IPv4) ||
-                       !ByteArray.Compare(localIPv6, snapshot.IPv6);
+                if(IsNetworkOnline != "Disconnected")
+                    EndNetworkProcess();
             }
-        }
 
-        /// <summary>
-        /// Updates tracked state from a network snapshot.
-        /// Called when establishing a new connection, switching adapters,
-        /// or refreshing state on same-adapter IP/name changes.
-        /// </summary>
-        private void ApplySnapshot(NetworkSnapshot snapshot)
-        {
-            lock (stateLock)
+            //the ByteArrayCompare is used to detect virtual ethernet adapters escaping from a null,
+            //adapterProperties.GatewayAddresses.FirstOrDefault() in the above foreach loop
+            if (!NetworkInterface.GetIsNetworkAvailable() || ByteArray.Compare(tempIP.Item1, defaultIPv4))
             {
-                localIPv4 = snapshot.IPv4;
-                localIPv6 = snapshot.IPv6;
+                localIPv4 = new byte[] { 0, 0, 0, 0 };
+                Debug.WriteLine("No connection");
+                if (isNetworkOnline != "Disconnected")
+                    EndNetworkProcess();
             }
-            currentAdapterId = snapshot.AdapterId;
-            AdapterName = snapshot.AdapterName;
         }
 
-        //---------- Start/Stop Network Monitoring ------------//
-
-        /// <summary>
-        /// Starts all network monitoring components:
-        /// - Database table setup
-        /// - ETW packet capture
-        /// - Speed monitoring periodic task
-        /// - Database push periodic task
-        /// </summary>
         public void StartNetworkProcess()
         {
-            // Ensure database table exists for this adapter
-            using (var db = new ApplicationDB(AdapterName))
+            using (ApplicationDB dB = new ApplicationDB(AdapterName))
             {
-                if (db.CreateTable() < 0)
-                {
-                    EventLogger.Error("Error: Create table");
-                }
+                if (dB.CreateTable() < 0)
+                    Debug.WriteLine("Error: Create table");
                 else
                 {
-                    db.InsertUniqueRow_AdapterTable(AdapterName);
-                    db.UpdateDatesInDB();
+                    dB.UpdateDatesInDB();
                 }
             }
 
-            TraceEventSession.GetActiveSession(KernelSessionName)?.Stop();
-            // Start packet capture and periodic tasks
-            CaptureNetworkPackets();
-            StartSpeedMonitoring();
-            StartDbPush();
+            CaptureNetworkPackets(); //start capturing packets
+            asyncTask_networkSpeed.Task = CaptureNetworkSpeed(); //start logging the speed
+            asyncTask_dbPush.Task = DBpush(); //start db push
 
-            // Update connection status (triggers UI update via PropertyChanged)
             IsNetworkOnline = AdapterName;
         }
 
-        /// <summary>
-        /// Stops all network monitoring components and resets state.
-        /// Called on disconnect or before switching to a different adapter.
-        /// </summary>
         public void EndNetworkProcess()
         {
-            // Stop ETW session first (generates most activity)
-            StopKernelSession();
+            if (kernelSession != null)
+            {
+                kernelSession.Dispose();
+                kernelSession = null;
+            }
 
-            // Stop periodic tasks
-            StopPeriodicWork(ref networkSpeedWork, "Network speed");
-            StopPeriodicWork(ref dbPushWork, "DB push");
+            if (PacketTask != null)
+            {
+                PacketTask.Dispose();
+                PacketTask = null;
+            }
+            
+            asyncTask_networkSpeed.Dispose();
+            asyncTask_dbPush.Dispose();
 
-            // Clear process data buffers
-            lock (MyProcesses) MyProcesses.Clear();
-            lock (MyProcessesBuffer) MyProcessesBuffer.Clear();
+            if (MyProcesses != null)
+                MyProcesses.Clear();
 
-            // Reset speed counters
+            //reset speed counters
             CurrentSessionDownloadData = 0;
             CurrentSessionUploadData = 0;
             UploadSpeed = 0;
             DownloadSpeed = 0;
 
-            // Reset adapter tracking
-            currentAdapterId = "";
             IsNetworkOnline = "Disconnected";
         }
 
-        /// <summary>
-        /// Stops the ETW kernel session and waits for the capture task to complete.
-        /// </summary>
-        private void StopKernelSession()
+        //---------------------------------- Database push process ------------------------------------//
+
+        private async Task DBpush()
         {
-            // Disposing the session causes Source.Process() to return
-            kernelSession?.Dispose();
-            kernelSession = null;
-
-            var task = PacketTask;
-            if (task != null)
-            {
-                try
-                {
-                    task.Wait(TimeSpan.FromMilliseconds(OneSec));
-                }
-                catch (AggregateException ex)
-                {
-                    EventLogger.Error("Packet capture stop error", ex);
-                }
-                finally
-                {
-                    if (task.IsCompleted)
-                        task.Dispose();
-                    else
-                        task.ContinueWith(t => t.Dispose(), TaskScheduler.Default);
-
-                    PacketTask = null;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Safely stops a periodic work task with error handling.
-        /// </summary>
-        private void StopPeriodicWork(ref PeriodicWork? work, string name)
-        {
+            asyncTask_dbPush.CancelToken = new CancellationTokenSource();
             try
             {
-                work?.Stop();
+                Debug.WriteLine("Operation Started : DB push");
+                while (await asyncTask_dbPush.Timer.WaitForNextTickAsync(asyncTask_dbPush.CancelToken.Token))
+                {
+#if DEBUG
+                    Stopwatch sw1 = Stopwatch.StartNew();
+#endif
+                    if (PushToDBBuffer != null)
+                    {
+                        using (ApplicationDB dB = new ApplicationDB(AdapterName))
+                        {
+                            lock (PushToDBBuffer)
+                            {
+                                foreach (KeyValuePair<string, MyProcess_Small?> app in PushToDBBuffer)
+                                {
+                                    dB.PushToDB(app.Key, app.Value!.CurrentDataRecv, app.Value!.CurrentDataSend);
+                                }
+
+                                PushToDBBuffer.Clear();
+                            }
+                        }
+                    }
+#if DEBUG
+                    sw1.Stop();
+                    Debug.WriteLine($"elapsed time (DBpush): {sw1.ElapsedMilliseconds} | time {DateTime.Now.ToString("O")}");
+#endif
+                    //Debug.WriteLine($"current thread (CaptureNetworkSpeed): {Thread.CurrentThread.ManagedThreadId}");
+                    //Debug.WriteLine($"networkProcess {DownloadSpeed}");
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+                Debug.WriteLine($"db push token invoked: {ex.Message}");
             }
             catch (Exception ex)
             {
-                EventLogger.Error($"{name} stop error", ex);
-            }
-            finally
-            {
-                work = null;
+                Debug.WriteLine($"db push error: {ex.Message}");
             }
         }
 
-        //---------- Periodic Tasks ------------//
+        //----------------------------------------------------------------------------------------//
 
-        /// <summary>
-        /// Starts the periodic task that calculates current network speed.
-        /// Runs every second and computes speed as delta from previous totals.
-        /// </summary>
-        private void StartSpeedMonitoring()
+        //---------------------------------- NETWORK SPEED ---------------------------------------//
+
+        private async Task CaptureNetworkSpeed()
         {
-            long tempDownload = 0;
-            long tempUpload = 0;
-
-            networkSpeedWork = new PeriodicWork("Network speed", TimeSpan.FromSeconds(1));
-            networkSpeedWork.Start(_ =>
+            asyncTask_networkSpeed.CancelToken = new CancellationTokenSource();
+            try
             {
-                // Read current totals (atomic reads)
-                long currentDown = Interlocked.Read(ref CurrentSessionDownloadData);
-                long currentUp = Interlocked.Read(ref CurrentSessionUploadData);
-
-                // Calculate speed based on user's preferred format
-                if (SettingsManager.Current.NetworkSpeedFormat == 0)
+                long tempDownload = 0;
+                long tempUpload = 0;
+                Debug.WriteLine("Operation Started : Network speed");
+                while (await asyncTask_networkSpeed.Timer.WaitForNextTickAsync(asyncTask_networkSpeed.CancelToken.Token))
                 {
-                    // Bits per second
-                    DownloadSpeed = (currentDown - tempDownload) * 8;
-                    UploadSpeed = (currentUp - tempUpload) * 8;
-                }
-                else
-                {
-                    // Bytes per second
-                    DownloadSpeed = currentDown - tempDownload;
-                    UploadSpeed = currentUp - tempUpload;
-                }
-
-                // Store for next iteration's delta calculation
-                tempDownload = currentDown;
-                tempUpload = currentUp;
-
-                return Task.CompletedTask;
-            });
-        }
-
-        /// <summary>
-        /// Starts the periodic task that pushes accumulated process data to the database.
-        /// Runs every 5 seconds to batch writes and reduce I/O.
-        /// </summary>
-        private void StartDbPush()
-        {
-            dbPushWork = new PeriodicWork("DB push", TimeSpan.FromSeconds(5));
-            dbPushWork.Start(_ =>
-            {
 #if DEBUG
-                var sw = Stopwatch.StartNew();
+                    Stopwatch sw1 = Stopwatch.StartNew();
 #endif
-                lock (PushToDBBuffer)
-                {
-                    if (PushToDBBuffer.Count > 0)
+                    if(Properties.Settings.Default.NetworkSpeedFormat == 0)
                     {
-                        using var db = new ApplicationDB(AdapterName);
-                        foreach (var (key, proc) in PushToDBBuffer)
-                        {
-                            if (proc != null)
-                                db.PushToDB(key, proc.CurrentDataRecv, proc.CurrentDataSend);
-                        }
-                        PushToDBBuffer.Clear();
+                        UploadSpeed = (CurrentSessionUploadData - tempUpload) * 8;
+                        DownloadSpeed = (CurrentSessionDownloadData - tempDownload) * 8;
                     }
-                }
+                    else
+                    {
+                        UploadSpeed = (CurrentSessionUploadData - tempUpload);
+                        DownloadSpeed = (CurrentSessionDownloadData - tempDownload);
+                    }
+
+                    tempUpload = CurrentSessionUploadData;
+                    tempDownload = CurrentSessionDownloadData;
 #if DEBUG
-                sw.Stop();
-                Debug.WriteLine($"elapsed time (DBpush): {sw.ElapsedMilliseconds} | time {DateTime.Now:O}");
+                    sw1.Stop();
+                    Debug.WriteLine($"elapsed time (CaptureNetworkSpeed): {sw1.ElapsedMilliseconds} | time {DateTime.Now.ToString("O")}");
 #endif
-                return Task.CompletedTask;
-            });
+                    //Debug.WriteLine($"current thread (CaptureNetworkSpeed): {Thread.CurrentThread.ManagedThreadId}");
+                    //Debug.WriteLine($"networkProcess {DownloadSpeed}");
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+                Debug.WriteLine($"cancel speed token invoked: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Capture network speed error: {ex.Message}");
+            }
         }
 
-        //---------- ETW Packet Capture ------------//
+        //----------------------------------------------------------------------------------------//
 
-        /// <summary>
-        /// Starts the ETW (Event Tracing for Windows) kernel session to capture
-        /// all TCP/IP network packets on the system.
-        /// 
-        /// Uses the NT Kernel Logger session which requires admin privileges.
-        /// Packets are filtered to only count those matching our local IP.
-        /// </summary>
+        //---------------------------------- NETWORK PACKETS ------------------------------------//
+
         private void CaptureNetworkPackets()
         {
+            Debug.WriteLine("Operation Started : Network capture");
             PacketTask = Task.Run(() =>
             {
-                if (kernelSession != null) return;
-
-                try
+                if(kernelSession == null)
                 {
-                    // Create kernel trace session (requires admin)
-                    kernelSession = new TraceEventSession(KernelSessionName);
-                    kernelSession.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP);
+                    try
+                    {
+                        kernelSession = new TraceEventSession(KernelTraceEventParser.KernelSessionName);
 
-                    // Subscribe to all TCP/UDP send/receive events
-                    // All events funnel through ProcessPacket for unified handling
-                    var kernel = kernelSession.Source.Kernel;
+                        kernelSession.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP);
 
-                    // Receive events (download)
-                    kernel.TcpIpRecv += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: true);
-                    kernel.TcpIpRecvIPV6 += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: true);
-                    kernel.UdpIpRecv += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: true);
-                    kernel.UdpIpRecvIPV6 += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: true);
+                        kernelSession.Source.Kernel.TcpIpRecv += Kernel_TcpIpRecv;
+                        kernelSession.Source.Kernel.TcpIpRecvIPV6 += Kernel_TcpIpRecvIPV6;
+                        kernelSession.Source.Kernel.UdpIpRecv += Kernel_UdpIpRecv;
+                        kernelSession.Source.Kernel.UdpIpRecvIPV6 += Kernel_UdpIpRecvIPV6;
 
-                    // Send events (upload)
-                    kernel.TcpIpSend += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: false);
-                    kernel.TcpIpSendIPV6 += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: false);
-                    kernel.UdpIpSend += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: false);
-                    kernel.UdpIpSendIPV6 += data => ProcessPacket(data.saddr, data.daddr, data.size, data.ProcessName, isRecv: false);
+                        kernelSession.Source.Kernel.TcpIpSend += Kernel_TcpIpSend;
+                        kernelSession.Source.Kernel.TcpIpSendIPV6 += Kernel_TcpIpSendIPV6;
+                        kernelSession.Source.Kernel.UdpIpSend += Kernel_UdpIpSend;
+                        kernelSession.Source.Kernel.UdpIpSendIPV6 += Kernel_UdpIpSendIPV6;
 
-                    // Blocks until session is disposed
-                    kernelSession.Source.Process();
-                }
-                catch (Exception ex)
-                {
-                    EventLogger.Error("Packet capture loop error", ex);
+                        kernelSession.Source.Process();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine(ex.Message);
+                    }
                 }
             });
         }
 
-        /// <summary>
-        /// Processes a single network packet captured by ETW.
-        /// Filters packets to only count those involving our local IP,
-        /// then records to the appropriate buffer based on direction.
-        /// </summary>
-        /// <param name="src">Source IP address</param>
-        /// <param name="dest">Destination IP address</param>
-        /// <param name="size">Packet size in bytes</param>
-        /// <param name="processName">Name of the process that sent/received the packet</param>
-        /// <param name="isRecv">True for download, false for upload</param>
-        private void ProcessPacket(IPAddress src, IPAddress dest, int size, string processName, bool isRecv)
+        //-----------------------------------------------------------------------------------------//
+
+        //upload events
+        private void Kernel_UdpIpSendIPV6(UpdIpV6TraceData obj)
         {
-            // Get current local IP for this address family
-            byte[] localIp;
-            lock (stateLock)
+            SendProcessIPV6(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        private void Kernel_UdpIpSend(UdpIpTraceData obj)
+        {
+            SendProcess(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        private void Kernel_TcpIpSendIPV6(TcpIpV6SendTraceData obj)
+        {
+            SendProcessIPV6(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        private void Kernel_TcpIpSend(TcpIpSendTraceData obj)
+        {
+            SendProcess(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        //download events    
+        private void Kernel_UdpIpRecv(UdpIpTraceData obj)
+        {
+            RecvProcess(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        private void Kernel_UdpIpRecvIPV6(UpdIpV6TraceData obj)
+        {
+            RecvProcessIPV6(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        private void Kernel_TcpIpRecv(TcpIpTraceData obj)
+        {
+            RecvProcess(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        private void Kernel_TcpIpRecvIPV6(TcpIpV6TraceData obj)
+        {
+            RecvProcessIPV6(obj.saddr, obj.daddr, obj.size, obj.ProcessName);
+        }
+
+        //calculate the Bytes sent and recieved
+        private void RecvProcess(in IPAddress src, in IPAddress dest, in int size, in string name)
+        {
+            bool ipCompSrc = ByteArray.Compare(src.GetAddressBytes(), localIPv4);
+            bool ipCompDest = ByteArray.Compare(dest.GetAddressBytes(), localIPv4);
+            if (ipCompSrc ^ ipCompDest)
             {
-                localIp = src.AddressFamily == AddressFamily.InterNetwork ? localIPv4 : localIPv6;
+                if (Properties.Settings.Default.NetworkType == 2 ? true : //both
+                    Properties.Settings.Default.NetworkType == 1 ? (ipCompSrc ? !IsIPv4IPv6Private(dest) : !IsIPv4IPv6Private(src)) : //public
+                    Properties.Settings.Default.NetworkType == 0 ? (ipCompSrc ?  IsIPv4IPv6Private(dest) :  IsIPv4IPv6Private(src)) : false) //private
+                {
+                    Recv(name, size);
+                }
             }
-
-            // Cache address bytes to avoid repeated allocations
-            var srcBytes = src.GetAddressBytes();
-            var destBytes = dest.GetAddressBytes();
-
-            // Check if packet involves our local IP
-            bool isSrc = ByteArray.Compare(srcBytes, localIp);
-            bool isDest = ByteArray.Compare(destBytes, localIp);
-
-            // XOR: exactly one should match (either we sent it or received it)
-            // If both match (loopback) or neither match (other adapter), skip
-            if (!(isSrc ^ isDest))
-                return;
-
-            // Apply network type filter (private/public/both)
-            if (!ShouldProcessByNetworkType(isSrc, src, dest))
-                return;
-
-            // Record the packet to appropriate counter and buffer
-            if (isRecv)
-                RecordRecv(processName, size);
-            else
-                RecordSend(processName, size);
         }
 
-        /// <summary>
-        /// Checks if a packet should be counted based on the user's network type filter setting.
-        /// </summary>
-        /// <param name="isLocalSrc">True if local IP is the source (upload), false if destination (download)</param>
-        /// <param name="src">Source IP</param>
-        /// <param name="dest">Destination IP</param>
-        /// <returns>True if packet should be counted</returns>
-        private bool ShouldProcessByNetworkType(bool isLocalSrc, IPAddress src, IPAddress dest)
+        private void RecvProcessIPV6(in IPAddress src, in IPAddress dest, in int size, in string name)
         {
-            // Remote IP is the one that isn't ours
-            var remoteIp = isLocalSrc ? dest : src;
-
-            return SettingsManager.Current.NetworkType switch
+            bool ipCompSrc = ByteArray.Compare(src.GetAddressBytes(), localIPv6);
+            bool ipCompDest = ByteArray.Compare(dest.GetAddressBytes(), localIPv6);
+            if (ipCompSrc ^ ipCompDest)
             {
-                0 => IsPrivateIP(remoteIp),   // Private only (LAN traffic)
-                1 => !IsPrivateIP(remoteIp),  // Public only (internet traffic)
-                2 => true,                     // Both
-                _ => false
-            };
+                if (Properties.Settings.Default.NetworkType == 2 ? true : //both
+                    Properties.Settings.Default.NetworkType == 1 ? (ipCompSrc ? !IsIPv4IPv6Private(dest) : !IsIPv4IPv6Private(src)) : //public
+                    Properties.Settings.Default.NetworkType == 0 ? (ipCompSrc ?  IsIPv4IPv6Private(dest) :  IsIPv4IPv6Private(src)) : false) //private
+                {
+                    Recv(name, size);
+                }
+            }
         }
 
-        /// <summary>
-        /// Records a received (download) packet.
-        /// </summary>
-        private void RecordRecv(string name, int size)
+        private void SendProcess(in IPAddress src, in IPAddress dest, in int size, in string name)
         {
-            // Thread-safe increment of running total
-            Interlocked.Add(ref CurrentSessionDownloadData, size);
-            RecordToBuffer(name, size, isRecv: true);
+            bool ipCompSrc = ByteArray.Compare(src.GetAddressBytes(), localIPv4);
+            bool ipCompDest = ByteArray.Compare(dest.GetAddressBytes(), localIPv4);
+            if (ipCompSrc ^ ipCompDest)
+            {
+                if (Properties.Settings.Default.NetworkType == 2 ? true : //both
+                    Properties.Settings.Default.NetworkType == 1 ? (ipCompSrc ? !IsIPv4IPv6Private(dest) : !IsIPv4IPv6Private(src)) : //public
+                    Properties.Settings.Default.NetworkType == 0 ? (ipCompSrc ?  IsIPv4IPv6Private(dest) :  IsIPv4IPv6Private(src)) : false) //private
+                {
+                    Send(name, size);
+                }
+            }
+        }
+        private void SendProcessIPV6(in IPAddress src, in IPAddress dest, in int size, in string name)
+        {
+            bool ipCompSrc = ByteArray.Compare(src.GetAddressBytes(), localIPv6);
+            bool ipCompDest = ByteArray.Compare(dest.GetAddressBytes(), localIPv6);
+            if (ipCompSrc ^ ipCompDest)
+            {
+                if (Properties.Settings.Default.NetworkType == 2 ? true : //both
+                    Properties.Settings.Default.NetworkType == 1 ? (ipCompSrc ? !IsIPv4IPv6Private(dest) : !IsIPv4IPv6Private(src)) : //public
+                    Properties.Settings.Default.NetworkType == 0 ? (ipCompSrc ?  IsIPv4IPv6Private(dest) :  IsIPv4IPv6Private(src)) : false) //private
+                {
+                    Send(name, size);
+                }
+            }
         }
 
-        /// <summary>
-        /// Records a sent (upload) packet.
-        /// </summary>
-        private void RecordSend(string name, int size)
+        // 
+        // How this works,
+        // Recv() runs every second adding the process name and size of the packet to memory (MyProcesses Dictionary) temporarily.
+        // this data is accessed and shown in the GUI. While accessing this data, the recv() adds the incoming process details to another memory container (MyProcessBuffer Dictionary)
+        // When accessing the buffer memory to show in GUI, Recv() alternates and adds the process details to the initial memory container (MyProcesses)
+        // The function alternates between these 2 memory containers.
+        //
+        private void Recv(string name, in int size)
         {
-            // Thread-safe increment of running total
-            Interlocked.Add(ref CurrentSessionUploadData, size);
-            RecordToBuffer(name, size, isRecv: false);
-        }
+            CurrentSessionDownloadData += (long)size;
 
-        /// <summary>
-        /// Records packet data to the active process buffer.
-        /// Uses double-buffering to minimize lock contention with UI reads.
-        /// </summary>
-        private void RecordToBuffer(string name, int size, bool isRecv)
-        {
-            // Empty process name means kernel/system traffic
-            if (string.IsNullOrEmpty(name))
+            if (name == "")
                 name = "System";
 
-            // Select buffer based on current phase
-            var dict = IsBufferTime ? MyProcessesBuffer : MyProcesses;
-
-            lock (dict)
+            if(IsBufferTime)
             {
-                // Get or create process entry (single lookup)
-                if (!dict.TryGetValue(name, out var proc))
+                lock(MyProcessesBuffer!)
                 {
-                    proc = new MyProcess_Small(name, 0, 0);
-                    dict[name] = proc;
+                    MyProcessesBuffer!.TryAdd(name, new MyProcess_Small(name, 0, 0));
+                    MyProcessesBuffer[name]!.CurrentDataRecv += (long)size;
                 }
-
-                // Accumulate data
-                if (isRecv)
-                    proc!.CurrentDataRecv += size;
-                else
-                    proc!.CurrentDataSend += size;
             }
+            else
+            {
+                lock(MyProcesses!)
+                {
+                    MyProcesses!.TryAdd(name, new MyProcess_Small(name, 0, 0));
+                    MyProcesses[name]!.CurrentDataRecv += (long)size;
+                }
+            }
+
+            //if (size == 0)
+            //    Debug.WriteLine($"but whyyy {name} | recv");
         }
 
-        //---------- IP Classification ------------//
-
-        /// <summary>
-        /// Determines if an IP address is in a private (non-routable) range.
-        /// Used for filtering traffic by network type (LAN vs internet).
-        /// 
-        /// Private ranges:
-        /// - IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
-        /// - IPv6: Link-local (fe80::), site-local, unique-local (fc00::/7)
-        /// </summary>
-        private bool IsPrivateIP(IPAddress ip)
+        private void Send(string name, in int size)
         {
-            // Handle IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+            CurrentSessionUploadData += (long)size;
+
+            if (name == "")
+                name = "System";
+
+            if (IsBufferTime)
+            {
+                lock (MyProcessesBuffer!) 
+                {
+                    MyProcessesBuffer!.TryAdd(name, new MyProcess_Small(name, 0, 0));
+                    MyProcessesBuffer[name]!.CurrentDataSend += (long)size;
+                }
+                    
+            }
+            else
+            {
+                lock (MyProcesses!) 
+                {
+                    MyProcesses!.TryAdd(name, new MyProcess_Small(name, 0, 0));
+                    MyProcesses[name]!.CurrentDataSend += (long)size;
+                }
+            }
+
+            //if (size == 0)
+            //    Debug.WriteLine($"but whyyy {name} | send");
+        }
+
+        private bool IsIPv4IPv6Private(IPAddress ip)
+        {
+            // Map back to IPv4 if mapped to IPv6, for example "::ffff:1.2.3.4" to "1.2.3.4".
             if (ip.IsIPv4MappedToIPv6)
                 ip = ip.MapToIPv4();
 
-            // Loopback is always private
-            if (IPAddress.IsLoopback(ip))
-                return true;
+            // Checks loopback ranges for both IPv4 and IPv6.
+            if (IPAddress.IsLoopback(ip)) return true;
 
+            // IPv4
             if (ip.AddressFamily == AddressFamily.InterNetwork)
-            {
-                var bytes = ip.GetAddressBytes();
-                return bytes[0] == 10 ||                                        // 10.0.0.0/8 (Class A)
-                       (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) || // 172.16.0.0/12 (Class B)
-                       (bytes[0] == 192 && bytes[1] == 168) ||                  // 192.168.0.0/16 (Class C)
-                       (bytes[0] == 169 && bytes[1] == 254);                    // 169.254.0.0/16 (link-local/APIPA)
-            }
+                return IsIPv4Private(ip.GetAddressBytes());
 
+            // IPv6
             if (ip.AddressFamily == AddressFamily.InterNetworkV6)
             {
-                return ip.IsIPv6LinkLocal ||     // fe80::/10
-#if NET6_0_OR_GREATER
-                       ip.IsIPv6UniqueLocal ||   // fc00::/7 (only available in .NET 6+)
+                return ip.IsIPv6LinkLocal ||
+#if NET6_0
+                        ip.IsIPv6UniqueLocal ||
 #endif
-                       ip.IsIPv6SiteLocal;       // fec0::/10 (deprecated but still checked)
+                        ip.IsIPv6SiteLocal;
             }
 
-            return false;
+            throw new NotSupportedException(
+                    $"IP address family {ip.AddressFamily} is not supported, expected only IPv4 (InterNetwork) or IPv6 (InterNetworkV6).");
         }
 
-        //---------- Property Changed ------------//
+        private bool IsIPv4Private(byte[] ipv4Bytes)
+        {
+            // Link local (no IP assigned by DHCP): 169.254.0.0 to 169.254.255.255 (169.254.0.0/16)
+            bool IsLinkLocal() => ipv4Bytes[0] == 169 && ipv4Bytes[1] == 254;
+
+            // Class A private range: 10.0.0.0 – 10.255.255.255 (10.0.0.0/8)
+            bool IsClassA() => ipv4Bytes[0] == 10;
+
+            // Class B private range: 172.16.0.0 – 172.31.255.255 (172.16.0.0/12)
+            bool IsClassB() => ipv4Bytes[0] == 172 && ipv4Bytes[1] >= 16 && ipv4Bytes[1] <= 31;
+
+            // Class C private range: 192.168.0.0 – 192.168.255.255 (192.168.0.0/16)
+            bool IsClassC() => ipv4Bytes[0] == 192 && ipv4Bytes[1] == 168;
+
+            return IsLinkLocal() || IsClassA() || IsClassC() || IsClassB();
+        }
+
+        //------property changers---------------//
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
-        private void OnPropertyChanged(string propName) =>
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propName));
+        private void OnPropertyChanged(string propName) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propName));
 
-        //---------- Dispose ------------//
-
-        /// <summary>
-        /// Cleans up all resources: unsubscribes from events, stops monitoring,
-        /// and flushes any pending data to the database.
-        /// </summary>
         public void Dispose()
         {
-            isDisposed = true;
-
-            // Unsubscribe from network change events
-            NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
-
-            // Dispose the debounce timer (prevents any pending callback from firing)
-            debounceTimer?.Dispose();
-            debounceTimer = null;
-
-            // Stop monitoring if active
             if (IsNetworkOnline != "Disconnected")
                 EndNetworkProcess();
 
-            // Flush any remaining buffered data to database
-            lock (PushToDBBuffer)
+            if(PushToDBBuffer != null)
             {
                 if (PushToDBBuffer.Count > 0)
                 {
-                    using var db = new ApplicationDB(AdapterName);
-                    foreach (var (key, proc) in PushToDBBuffer)
+                    using (ApplicationDB dB = new ApplicationDB(AdapterName))
                     {
-                        if (proc != null)
-                            db.PushToDB(key, proc.CurrentDataRecv, proc.CurrentDataSend);
+                        lock (PushToDBBuffer)
+                        {
+                            foreach (KeyValuePair<string, MyProcess_Small?> app in PushToDBBuffer)
+                            {
+                                dB.PushToDB(app.Key, app.Value!.CurrentDataRecv, app.Value!.CurrentDataSend);
+                            }
+
+                            PushToDBBuffer.Clear();
+                        }
                     }
-                    PushToDBBuffer.Clear();
                 }
             }
         }

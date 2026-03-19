@@ -1,5 +1,4 @@
-﻿using OpenNetMeter.Properties;
-using OpenNetMeter.Utilities;
+﻿using OpenNetMeter.Utilities;
 using System;
 using System.Globalization;
 using System.Windows.Data;
@@ -10,10 +9,10 @@ namespace OpenNetMeter.Views
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            bool useBytes = SettingsManager.Current.NetworkSpeedFormat != 0;
-            SpeedMagnitude magnitude = DataSizeSuffix.NormalizeMagnitude(SettingsManager.Current.NetworkSpeedMagnitude);
-
-            return DataSizeSuffix.InStr((long)value, 1, useBytes, magnitude);
+            if(Properties.Settings.Default.NetworkSpeedFormat == 0)
+                return DataSizeSuffix.InStr((long)value, 1, false);
+            else
+                return DataSizeSuffix.InStr((long)value, 1, true);
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)

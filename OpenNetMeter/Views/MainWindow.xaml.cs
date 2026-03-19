@@ -11,7 +11,7 @@ using System.Windows.Threading;
 using System.Diagnostics;
 using System.Windows.Controls;
 using System.ComponentModel;
-using OpenNetMeter.Properties;
+using System.Windows.Interop;
 
 namespace OpenNetMeter.Views
 {
@@ -63,7 +63,6 @@ namespace OpenNetMeter.Views
                 miniWidget = new MiniWidgetV(this);
                 mainWin = new MainWindowVM((MiniWidgetVM)miniWidget.DataContext, (ConfirmationDialogVM)confDialog.DataContext);
                 DataContext = mainWin;
-                mainWin.svm.RequestSetMiniWidgetVisibility += SetMiniWidgetVisibility;
                 
                 //initialize window position and size
                 AllWinPosAndSizeInit();
@@ -115,33 +114,11 @@ namespace OpenNetMeter.Views
 
         private void MiniWidget_Show_Click(object? sender, EventArgs e)
         {
-            ShowMiniWidget();
-        }
-
-        public void ShowMiniWidget()
-        {
-            if (miniWidget == null)
-                return;
-
-            miniWidget.ShowMiniWidget();
-            mainWin?.svm.SyncMiniWidgetVisibility(true);
-        }
-
-        public void HideMiniWidget()
-        {
-            if (miniWidget == null)
-                return;
-
-            miniWidget.HideMiniWidget();
-            mainWin?.svm.SyncMiniWidgetVisibility(false);
-        }
-
-        private void SetMiniWidgetVisibility(bool isVisible)
-        {
-            if (isVisible)
-                ShowMiniWidget();
-            else
-                HideMiniWidget();
+            WindowInteropHelper miniWidgetHwnd = new WindowInteropHelper(miniWidget);
+            if (miniWidgetHwnd.Handle != IntPtr.Zero && miniWidget != null)
+            {
+                miniWidget.ShowMiniWidget();
+            } 
         }
 
         // this is for when the user clicks the window exit button through the alt+tab program switcher
@@ -157,7 +134,7 @@ namespace OpenNetMeter.Views
                 case Forms.MouseButtons.Right:
                     if(trayIcon != null && trayIcon.ContextMenuStrip != null)
                     {
-                        if (SettingsManager.Current.DarkMode)
+                        if (Properties.Settings.Default.DarkMode)
                             trayIcon.ContextMenuStrip.ForeColor = Color.White;
                         else
                             trayIcon.ContextMenuStrip.ForeColor = Color.Black;
@@ -169,31 +146,31 @@ namespace OpenNetMeter.Views
 
         private void AllWinPosAndSizeInit()
         {
-            if (SettingsManager.Current.LaunchFirstTime)
+            if (Properties.Settings.Default.LaunchFirstTime)
             {
-                SettingsManager.Current.WinSize = new System.Drawing.Size((int)this.MinWidth, (int)this.MinHeight);
+                Properties.Settings.Default.WinSize = new System.Drawing.Size((int)this.MinWidth, (int)this.MinHeight);
                 this.WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen;
-                SettingsManager.Current.WinPos = new System.Drawing.Point((int)this.Left, (int)this.Top);
+                Properties.Settings.Default.WinPos = new System.Drawing.Point((int)this.Left, (int)this.Top);
 
                 if(miniWidget != null)
                 {
                     miniWidget.WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen;
-                    SettingsManager.Current.MiniWidgetPos = new System.Drawing.Point((int)miniWidget.Left, (int)miniWidget.Top);
+                    Properties.Settings.Default.MiniWidgetPos = new System.Drawing.Point((int)miniWidget.Left, (int)miniWidget.Top);
                 }
 
-                SettingsManager.Current.LaunchFirstTime = false;
-                SettingsManager.Save();
+                Properties.Settings.Default.LaunchFirstTime = false;
+                Properties.Settings.Default.Save();
             }
 
-            this.Left = SettingsManager.Current.WinPos.X;
-            this.Top = SettingsManager.Current.WinPos.Y;
-            this.Width = SettingsManager.Current.WinSize.Width;
-            this.Height = SettingsManager.Current.WinSize.Height;
+            this.Left = Properties.Settings.Default.WinPos.X;
+            this.Top = Properties.Settings.Default.WinPos.Y;
+            this.Width = Properties.Settings.Default.WinSize.Width;
+            this.Height = Properties.Settings.Default.WinSize.Height;
 
             if(miniWidget!= null)
             {
-                miniWidget.Left = SettingsManager.Current.MiniWidgetPos.X;
-                miniWidget.Top = SettingsManager.Current.MiniWidgetPos.Y;
+                miniWidget.Left = Properties.Settings.Default.MiniWidgetPos.X;
+                miniWidget.Top = Properties.Settings.Default.MiniWidgetPos.Y;
             }
 
             //check if window is out of bounds. This is for, when the user last opened the app in the 2nd monitor and then reopens it with a 1 monitor setup.
@@ -214,8 +191,8 @@ namespace OpenNetMeter.Views
             if (!isInScreen)
             {
                 this.WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen;
-                SettingsManager.Current.WinPos = new System.Drawing.Point((int)this.Left, (int)this.Top);
-                SettingsManager.Save();
+                Properties.Settings.Default.WinPos = new System.Drawing.Point((int)this.Left, (int)this.Top);
+                Properties.Settings.Default.Save();
             }
 
             resizeTimer.Tick += ResizeTimer_Tick;
@@ -293,8 +270,8 @@ namespace OpenNetMeter.Views
             resizeTimer.IsEnabled = false;
 
             //Do end of resize processing
-            SettingsManager.Current.WinSize =  new System.Drawing.Size((int)this.Width, (int)this.Height);
-            SettingsManager.Save();
+            Properties.Settings.Default.WinSize =  new System.Drawing.Size((int)this.Width, (int)this.Height);
+            Properties.Settings.Default.Save();
 
             //pass parent window dimensions to confirmation dialog
             confDialog?.SetParentWindowRect(new System.Windows.Rect(this.Left, this.Top, this.ActualWidth, this.ActualHeight));
@@ -318,8 +295,8 @@ namespace OpenNetMeter.Views
 
         private void SaveWinPos(int x, int y)
         {
-            SettingsManager.Current.WinPos = new System.Drawing.Point(x, y);
-            SettingsManager.Save();
+            Properties.Settings.Default.WinPos = new System.Drawing.Point(x, y);
+            Properties.Settings.Default.Save();
 
             //pass parent window dimensions to confirmation and about dialog
             confDialog?.SetParentWindowRect(new System.Windows.Rect(this.Left, this.Top, this.ActualWidth, this.ActualHeight));

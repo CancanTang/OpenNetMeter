@@ -2,25 +2,24 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-	<TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
-	<UseWindowsSDKContracts>true</UseWindowsSDKContracts>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\AppIcon.ico</ApplicationIcon>
-    <Version>$(ProductVersion)</Version>
-    <AssemblyName>$(ProductName)</AssemblyName>
+    <Version>0.13.0</Version>
+    <AssemblyName>OpenNetMeter</AssemblyName>
+    <StartupObject>OpenNetMeter.App</StartupObject>
     <Win32Resource />
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
- <ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ManagedNativeWifi" Version="2.6.0" />
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.15" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="ParallelExtensionsCore" Version="2.1.0" />
     <PackageReference Include="TaskScheduler" Version="2.11.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.EventLog" Version="9.0.9" />
   </ItemGroup>
 
   <ItemGroup>
@@ -52,13 +51,6 @@
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
     </None>
-  </ItemGroup>
-
-  <ItemGroup>
-    <Resource Include="Resources\pin\pin.png" />
-    <Resource Include="Resources\pin\pin-dark.png" />
-    <Resource Include="Resources\pin\unpin.png" />
-    <Resource Include="Resources\pin\unpin-dark.png" />
   </ItemGroup>
 
 </Project>

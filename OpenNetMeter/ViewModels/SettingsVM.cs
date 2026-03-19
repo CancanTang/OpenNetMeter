@@ -1,12 +1,9 @@
-using OpenNetMeter.Properties;
-using OpenNetMeter.Utilities;
+﻿using OpenNetMeter.Utilities;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Input;
 using TaskScheduler = Microsoft.Win32.TaskScheduler;
 
@@ -28,8 +25,8 @@ namespace OpenNetMeter.ViewModels
                     OnPropertyChanged("SetStartWithWin");
 
                     //set the app settings
-                    SettingsManager.Current.StartWithWin = value;
-                    SettingsManager.Save();
+                    Properties.Settings.Default.StartWithWin = value;
+                    Properties.Settings.Default.Save();
 
                     UnlockOptionStartWin = false;
                     //register to task scheduler
@@ -68,8 +65,8 @@ namespace OpenNetMeter.ViewModels
                 if (minimizeOnStart != value)
                 {
                     minimizeOnStart = value;
-                    SettingsManager.Current.MinimizeOnStart = value;
-                    SettingsManager.Save();
+                    Properties.Settings.Default.MinimizeOnStart = value;
+                    Properties.Settings.Default.Save();
                 }
             }
         }
@@ -103,8 +100,8 @@ namespace OpenNetMeter.ViewModels
                     OnPropertyChanged("NetworkTrafficType");
 
                     //set the app settings
-                    SettingsManager.Current.NetworkType = value;
-                    SettingsManager.Save();
+                    Properties.Settings.Default.NetworkType = value;
+                    Properties.Settings.Default.Save();
                 }
             }
         }
@@ -118,25 +115,9 @@ namespace OpenNetMeter.ViewModels
                 if(networkSpeedFormat != value)
                 {
                     networkSpeedFormat = value;
-                    SettingsManager.Current.NetworkSpeedFormat = value;
-                    SettingsManager.Save();
+                    Properties.Settings.Default.NetworkSpeedFormat = value;
+                    Properties.Settings.Default.Save();
                     OnPropertyChanged("NetworkSpeedFormat");
-                }
-            }
-        }
-
-        private int networkSpeedMagnitude;
-        public int NetworkSpeedMagnitude
-        {
-            get { return networkSpeedMagnitude; }
-            set
-            {
-                if (networkSpeedMagnitude != value)
-                {
-                    networkSpeedMagnitude = value;
-                    SettingsManager.Current.NetworkSpeedMagnitude = value;
-                    SettingsManager.Save();
-                    OnPropertyChanged("NetworkSpeedMagnitude");
                 }
             }
         }
@@ -155,8 +136,8 @@ namespace OpenNetMeter.ViewModels
                 SetMiniWidgetBackgroundColor(value, MiniWidgetTransparentSlider);
 
                 //set the app settings
-                SettingsManager.Current.DarkMode = value;
-                SettingsManager.Save();
+                Properties.Settings.Default.DarkMode = value;
+                Properties.Settings.Default.Save();
             }
         }
 
@@ -174,8 +155,8 @@ namespace OpenNetMeter.ViewModels
                 //trigger the miniwidget's BackgroundColor property.
                 SetMiniWidgetBackgroundColor(DarkMode, value);
 
-                SettingsManager.Current.MiniWidgetTransparentSlider = value;
-                SettingsManager.Save();
+                Properties.Settings.Default.MiniWidgetTransparentSlider = value;
+                Properties.Settings.Default.Save();
             }
         }
 
@@ -194,69 +175,6 @@ namespace OpenNetMeter.ViewModels
             }
         }
         public ICommand ResetBtn { get; set; }
-        public ICommand UpdateCheckBtn { get; set; }
-        public ICommand DownloadUpdateBtn { get; set; }
-
-        private bool miniWidgetVisibility;
-        public bool MiniWidgetVisibility
-        {
-            get { return miniWidgetVisibility; }
-            set
-            {
-                if (miniWidgetVisibility != value)
-                {
-                    miniWidgetVisibility = value;
-                    OnPropertyChanged("MiniWidgetVisibility");
-                    RequestSetMiniWidgetVisibility?.Invoke(value);
-                }
-            }
-        }
-
-        public event Action<bool>? RequestSetMiniWidgetVisibility;
-
-        public void SyncMiniWidgetVisibility(bool isVisible)
-        {
-            if (miniWidgetVisibility == isVisible)
-                return;
-
-            miniWidgetVisibility = isVisible;
-            OnPropertyChanged("MiniWidgetVisibility");
-        }
-
-        private bool _isUpdateAvailable;
-        public bool IsUpdateAvailable
-        {
-            get { return _isUpdateAvailable; }
-            set
-            {
-                _isUpdateAvailable = value;
-                OnPropertyChanged("IsUpdateAvailable");
-            }
-        }
-
-        private string _updateStatusMessage = string.Empty;
-        public string UpdateStatusMessage
-        {
-            get { return _updateStatusMessage; }
-            set
-            {
-                _updateStatusMessage = value;
-                OnPropertyChanged("UpdateStatusMessage");
-            }
-        }
-
-        private bool _isCheckingForUpdates;
-        public bool IsCheckingForUpdates
-        {
-            get { return _isCheckingForUpdates; }
-            set
-            {
-                _isCheckingForUpdates = value;
-                OnPropertyChanged("IsCheckingForUpdates");
-            }
-        }
-
-        private string DownloadUrl;
 
         private ConfirmationDialogVM? cdvm;
         private MiniWidgetVM? mwvm;
@@ -269,33 +187,26 @@ namespace OpenNetMeter.ViewModels
             cdvm.DialogMessage = "Warning!!! This will delete all saved profiles.\nDo you still want to continue?";
 
             taskFolder = "OpenNetMeter";
-            taskName = "OpenNetMeterLogon";
+            taskName = "OpenNetMeter" + "-" + Assembly.GetExecutingAssembly()?.GetName()?.Version?.ToString(3);
 
             //start with windows setting
             UnlockOptionStartWin = true;
-            SetStartWithWin = SettingsManager.Current.StartWithWin;
-            MinimizeOnStart = SettingsManager.Current.MinimizeOnStart;
-            DarkMode = SettingsManager.Current.DarkMode;
-            MiniWidgetTransparentSlider = SettingsManager.Current.MiniWidgetTransparentSlider;
-            MiniWidgetVisibility = SettingsManager.Current.MiniWidgetVisibility;
+            SetStartWithWin = Properties.Settings.Default.StartWithWin;
+            MinimizeOnStart = Properties.Settings.Default.MinimizeOnStart;
+            DarkMode = Properties.Settings.Default.DarkMode;
+            MiniWidgetTransparentSlider = Properties.Settings.Default.MiniWidgetTransparentSlider;
 
             if (SetStartWithWin)
                 UnlockMinimizeOnStart = false;
             else
                 UnlockMinimizeOnStart = true;
 
-            NetworkTrafficType = SettingsManager.Current.NetworkType;
+            NetworkTrafficType = Properties.Settings.Default.NetworkType;
 
-            NetworkSpeedFormat = SettingsManager.Current.NetworkSpeedFormat;
-            NetworkSpeedMagnitude = SettingsManager.Current.NetworkSpeedMagnitude;
+            NetworkSpeedFormat = Properties.Settings.Default.NetworkSpeedFormat;
 
             ResetBtn = new BaseCommand(ResetData, true);
-            UpdateCheckBtn = new BaseCommand(UpdateCheck, true);
-            DownloadUpdateBtn = new BaseCommand(DownloadUpdate, true);
-            DownloadUrl = string.Empty;
-            IsUpdateAvailable = false;
-            UpdateStatusMessage = "Click here to check for new updates";
-            IsCheckingForUpdates = false;
+
             DeleteAllFiles = false;
         }
 
@@ -315,77 +226,6 @@ namespace OpenNetMeter.ViewModels
         {
             if(cdvm != null)
                 cdvm.IsVisible = System.Windows.Visibility.Visible;
-        }
-
-        private async void UpdateCheck(object? obj)
-        {
-            IsCheckingForUpdates = true;
-            UpdateStatusMessage = "Checking for updates...";
-            string tempMsgStatus = string.Empty; 
-            IsUpdateAvailable = false;
-
-            const int minDisplayTimeMs = 2000; // 2 seconds, this is to show a progress bar for the update check, for better ux
-            var stopwatch = Stopwatch.StartNew();
-
-            try
-            {
-                (Version? latestVersion, string? downloadUrl) = await UpdateChecker.CheckForUpdates();
-                if (latestVersion != null && downloadUrl != null)
-                {
-                    Version? currentVersion = Assembly.GetExecutingAssembly()?.GetName()?.Version;
-                    Debug.WriteLine($"download url: {downloadUrl}, current version: {currentVersion}, latest version: {latestVersion}");
-                    if (currentVersion != null && latestVersion > currentVersion)
-                    {
-                        DownloadUrl = downloadUrl;
-                        tempMsgStatus = $"A new version {latestVersion} is available!";
-                        IsUpdateAvailable = true;
-                    }
-                    else
-                    {
-                        tempMsgStatus = "You have the latest version.";
-                    }
-                }
-                else
-                {
-                    tempMsgStatus = "Error checking for updates.";
-                }
-            }
-            catch (Exception ex)
-            {
-                tempMsgStatus = "Error checking for updates.";
-                EventLogger.Error("Error checking for updates", ex);
-            }
-            finally
-            {
-                stopwatch.Stop();
-
-                int elapsedMs = (int)stopwatch.ElapsedMilliseconds;
-                int remainingTime = minDisplayTimeMs - elapsedMs;
-                if (remainingTime > 0)
-                {
-                    await Task.Delay(remainingTime);
-                }
-
-                IsCheckingForUpdates = false;
-                UpdateStatusMessage = tempMsgStatus;
-            }
-        }
-
-        private void DownloadUpdate(object? obj)
-        {
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = DownloadUrl,
-                    UseShellExecute = true
-                };
-                Process.Start(psi);
-            }
-            catch (Exception ex)
-            {
-                EventLogger.Error("Error launching update download URL", ex);
-            }
         }
 
         private void ResetDataYesOrNo(object? obj)
@@ -420,7 +260,7 @@ namespace OpenNetMeter.ViewModels
             }
             catch (Exception ex)
             {
-                EventLogger.Error("Error while updating startup task registration", ex);
+                Debug.WriteLine(ex.Message);
             }
             finally
             {
@@ -433,7 +273,7 @@ namespace OpenNetMeter.ViewModels
                     }
                     catch (Exception ex1)
                     {
-                        EventLogger.Error("Error creating startup task folder/definition", ex1);
+                        Debug.WriteLine("Error: " + ex1.Message);
                     }
                 }
             }
@@ -478,7 +318,7 @@ namespace OpenNetMeter.ViewModels
             }
             catch(Exception ex)
             {
-                EventLogger.Error("Error creating startup task", ex);
+                Debug.WriteLine("Error: " + ex.Message);
             }
         }
 

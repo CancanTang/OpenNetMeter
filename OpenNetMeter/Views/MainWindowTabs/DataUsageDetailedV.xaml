@@ -1,0 +1,26 @@
+﻿<UserControl x:Class="OpenNetMeter.Views.DataUsageDetailedV"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:v="clr-namespace:OpenNetMeter.Views" 
+             xmlns:vm="clr-namespace:OpenNetMeter.ViewModels"
+             mc:Ignorable="d" 
+             d:DesignHeight="400" d:DesignWidth="650">
+    
+    <UserControl.Resources>
+        <v:UnitConverterBytes x:Key="converterBytes"/>
+    </UserControl.Resources>
+    <Grid Style="{StaticResource BackgroundColor2}">
+        <DataGrid Grid.Row="1" x:Name="AllAppsData" FrozenColumnCount="1" IsReadOnly="True" AutoGenerateColumns="False" ItemsSource="{Binding MyProcesses}" BorderThickness="1" Style="{DynamicResource DGHeaderStyle}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Name" Binding="{Binding Value.Name}" HeaderStyle="{StaticResource DGCHeaderStyle1}" CellStyle="{StaticResource DGCellStyle1}"/>
+                <DataGridTextColumn Header="Current Data Recieved"  Binding="{Binding Value.CurrentDataRecv, Converter={StaticResource converterBytes}}" HeaderStyle="{StaticResource DGCHeaderStyle2}" CellStyle="{StaticResource DGCellStyle2}"/>
+                <DataGridTextColumn Header="Current Data Sent" Binding="{Binding Value.CurrentDataSend, Converter={StaticResource converterBytes}}" HeaderStyle="{StaticResource DGCHeaderStyle2}" CellStyle="{StaticResource DGCellStyle2}"/>
+                <DataGridTextColumn Header="Total Data Recieved" Binding="{Binding Value.TotalDataRecv, Converter={StaticResource converterBytes}}" HeaderStyle="{StaticResource DGCHeaderStyle2}" CellStyle="{StaticResource DGCellStyle2}"/>
+                <DataGridTextColumn Header="Total Data Sent" Binding="{Binding Value.TotalDataSend, Converter={StaticResource converterBytes}}" HeaderStyle="{StaticResource DGCHeaderStyle2}" CellStyle="{StaticResource DGCellStyle2}"/>
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+    
+</UserControl>

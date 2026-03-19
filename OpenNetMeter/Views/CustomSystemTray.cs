@@ -1,6 +1,10 @@
-﻿using System.Drawing;
+﻿using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using OpenNetMeter.Properties;
 
 namespace OpenNetMeter.Views
 {
@@ -10,7 +14,7 @@ namespace OpenNetMeter.Views
         {
             get
             {
-                if (SettingsManager.Current.DarkMode)
+                if (Properties.Settings.Default.DarkMode)
                     return Color.FromArgb(32, 32, 32);
                 else
                     return Color.FromArgb(240, 240, 240);
@@ -20,7 +24,7 @@ namespace OpenNetMeter.Views
         {
             get
             {
-                if (SettingsManager.Current.DarkMode)
+                if (Properties.Settings.Default.DarkMode)
                     return Color.FromArgb(64, 64, 64);
                 else
                     return Color.FromArgb(220, 220, 220);
@@ -31,7 +35,7 @@ namespace OpenNetMeter.Views
         {
             get
             {
-                if (SettingsManager.Current.DarkMode)
+                if (Properties.Settings.Default.DarkMode)
                     return Color.FromArgb(32, 32, 32);
                 else
                     return Color.FromArgb(240, 240, 240);
@@ -41,7 +45,7 @@ namespace OpenNetMeter.Views
         {
             get
             {
-                if (SettingsManager.Current.DarkMode)
+                if (Properties.Settings.Default.DarkMode)
                     return Color.FromArgb(32, 32, 32);
                 else
                     return Color.FromArgb(240, 240, 240);
@@ -51,7 +55,7 @@ namespace OpenNetMeter.Views
         {
             get
             {
-                if (SettingsManager.Current.DarkMode)
+                if (Properties.Settings.Default.DarkMode)
                     return Color.FromArgb(32, 32, 32);
                 else
                     return Color.FromArgb(240, 240, 240);
@@ -61,7 +65,7 @@ namespace OpenNetMeter.Views
         {
             get
             {
-                if (SettingsManager.Current.DarkMode)
+                if (Properties.Settings.Default.DarkMode)
                     return Color.FromArgb(32, 32, 32);
                 else
                     return Color.FromArgb(240, 240, 240);

@@ -6,12 +6,15 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Input;
 
 namespace OpenNetMeter.ViewModels
 {
     
-    public class DataUsageHistoryVM : INotifyPropertyChanged
+    public class DataUsageHistoryVM : IDisposable, INotifyPropertyChanged
     {
         public DateTime DateMax { get; private set; }
         public DateTime DateMin { get; private set; }
@@ -64,6 +67,8 @@ namespace OpenNetMeter.ViewModels
         }
 
         public ICommand FilterBtn { get; set; }
+
+        private FileSystemWatcher watcher;
         public DataUsageHistoryVM()
         {
             UpdateDates();
@@ -73,13 +78,14 @@ namespace OpenNetMeter.ViewModels
             PropertyChanged += DataUsageHistoryVM_PropertyChanged;
 
             Profiles = new ObservableCollection<string>();
-            MyProcesses = new ObservableCollection<MyProcess_Small>();;
+            MyProcesses = new ObservableCollection<MyProcess_Small>();
+            watcher = new FileSystemWatcher(ApplicationDB.GetFilePath(), "*.sqlite");
+            watcher.Created += OnFile_Created;
+            watcher.Deleted += OnFile_Deleted;
+            watcher.EnableRaisingEvents = true;
 
             //set button command
             FilterBtn = new BaseCommand(Filter, true);
-
-            // initial load
-            GetAllDBFiles();
         }
 
         public void UpdateDates()
@@ -104,11 +110,28 @@ namespace OpenNetMeter.ViewModels
             }
         }
 
+        private void OnFile_Created(object sender, FileSystemEventArgs e)
+        {
+            App.Current.Dispatcher.Invoke(() =>
+            {
+                GetAllDBFiles();
+            });
+        }
+
+        private void OnFile_Deleted(object sender, FileSystemEventArgs e)
+        {
+            App.Current.Dispatcher.Invoke(() =>
+            {
+                GetAllDBFiles();
+            });
+        }
+
         private void Filter(object? obj)
         {
             MyProcesses.Clear();
             TotalDownloadData = 0;
             TotalUploadData = 0;
+            //show confirmation dialog
             Debug.WriteLine($"Filter {DateStart.ToString("d")} | {DateEnd.ToString("d")}");
             if(SelectedProfile != null)
             {
@@ -121,8 +144,7 @@ namespace OpenNetMeter.ViewModels
                         {
                             if(!Convert.IsDBNull(dataStats[i][0]) && !Convert.IsDBNull(dataStats[i][1]) && !Convert.IsDBNull(dataStats[i][2]))
                             {
-                                string processName = Convert.ToString(dataStats[i][0])!;
-                                MyProcesses.Add(new MyProcess_Small(processName, Convert.ToInt64(dataStats[i][1]), Convert.ToInt64(dataStats[i][2]), ProcessIconCache.GetIcon(processName)));
+                                MyProcesses.Add(new MyProcess_Small(Convert.ToString(dataStats[i][0])!, Convert.ToInt64(dataStats[i][1]), Convert.ToInt64(dataStats[i][2])));
 
                                 TotalDownloadData += Convert.ToInt64(dataStats[i][1]);
                                 TotalUploadData += Convert.ToInt64(dataStats[i][2]);
@@ -136,48 +158,39 @@ namespace OpenNetMeter.ViewModels
 
         public void GetAllDBFiles()
         {
-            // Ensure collection updates occur on the UI thread
-            if (!App.Current.Dispatcher.CheckAccess())
-            {
-                App.Current.Dispatcher.Invoke(() => GetAllDBFiles());
-                return;
-            }
-
+            string[] fileArray = Directory.GetFiles(ApplicationDB.GetFilePath(), "*.sqlite");
             Profiles?.Clear();
-
-            // Ensure DB exists and read adapters from it
-            using (ApplicationDB dB = new ApplicationDB(string.Empty))
+            for(int i = 0; i<fileArray.Length; i++)
             {
-                dB.CreateTable();
-                var adapters = dB.GetAllAdapters();
-                foreach (var a in adapters)
-                {
-                    Profiles?.Add(a);
-                }
+                Profiles?.Add(Path.GetFileNameWithoutExtension(fileArray[i]));
+                //Debug.WriteLine(Path.GetFileNameWithoutExtension(fileArray[i]));
             }
-
             if (Profiles?.Count > 0)
                 SelectedProfile = Profiles?[0];
         }
 
         public void DeleteAllDBFiles()
         {
-            try
+            DirectoryInfo? dir = new DirectoryInfo(ApplicationDB.GetFilePath());
+            foreach (FileInfo? file in dir.GetFiles("*.sqlite"))
             {
-                string path = ApplicationDB.GetUnifiedDBFullPath();
-                if (File.Exists(path))
-                    File.Delete(path);
-                Profiles?.Clear();
-                SelectedProfile = null;
-            }
-            catch (IOException ex)
-            {
-                EventLogger.Error("Failed to delete usage database file", ex);
+                try
+                {
+                    file.Delete();
+                }
+                catch (IOException ex)
+                {
+                    Debug.WriteLine(ex.Message);
+                }
             }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         private void OnPropertyChanged(string propName) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propName));
 
+        public void Dispose()
+        {
+            watcher.Dispose();
+        }
     }
 }
